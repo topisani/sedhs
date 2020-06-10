@@ -2,6 +2,22 @@
 module Lib where
 
 import           Data.Char
+import           Data.Maybe
+
+eatSpace :: String -> String
+eatSpace (x : xs) | isSpace x = eatSpace xs
+eatSpace xs                   = xs
+
+eatSpaceOrSemCol :: String -> String
+eatSpaceOrSemCol (x : xs) | isSpace x || x == ';' = eatSpaceOrSemCol xs
+eatSpaceOrSemCol xs                               = xs
+
+nextLine :: String -> (String, String)
+nextLine str = getLineImpl ("", str)
+ where
+  getLineImpl (line, '\n' : xs) = (line, xs)
+  getLineImpl (line, x : xs   ) = getLineImpl (line ++ [x], xs)
+  getLineImpl (line, []       ) = (line, [])
 
 type Parse a = (Maybe a, String)
 class Parseable a where
@@ -13,21 +29,13 @@ class Parseable a where
 
 instance Parseable Int
 instance Parseable Char where
-  parse "" = (Nothing, "")
-  parse (x:xs) = (Just x, xs)
+  parse ""       = (Nothing, "")
+  parse (x : xs) = (Just x, xs)
 
 type Address = Int
 data OptAddr2 = NoAddr | Addr1 Address | Addr2 Address Address deriving (Show, Eq)
 type Function = Char
 type Command = (OptAddr2, Function, String)
-
-eatSpace :: String -> String
-eatSpace (x : xs) | isSpace x = eatSpace xs
-eatSpace xs                   = xs
-
-eatSpaceOrSemCol :: String -> String
-eatSpaceOrSemCol (x : xs) | isSpace x || x == ';' = eatSpaceOrSemCol xs
-eatSpaceOrSemCol xs                               = xs
 
 instance Parseable OptAddr2 where
   parse xs = case parse xs :: Parse Int of
@@ -42,13 +50,42 @@ instance Parseable Command where
         (func     , zs) = parse ys :: Parse Char
     in  (fmap (addr, , zs) func, zs)
 
+
+data StreamEditor = StreamEditor {
+  patternSpace :: String,
+  lineNum :: Int
+} deriving (Show)
+
+data CommandResult = Continue | NextCycle
+
+defaultSed :: StreamEditor
+defaultSed = StreamEditor { patternSpace = "", lineNum = 0 }
+
+incState state space = StreamEditor { patternSpace = space, lineNum = lineNum state + 1}
+
 execute :: String -> String -> String
-execute input script = applyCommand input (parseScript script)
+execute input script = executeSed (parseScript script) (input, defaultSed, "")
 
-parseScript :: String -> Maybe Command
-parseScript xs = fst $ parse $ eatSpaceOrSemCol xs
+parseScript :: String -> [Command]
+parseScript xs = maybeToList $ fst $ parse $ eatSpaceOrSemCol xs
 
-applyCommand :: String -> Maybe Command -> String
-applyCommand input Nothing    = input ++ ['\n']
-applyCommand input (Just cmd) = case cmd of
-  (_, 'd', _) -> ""
+executeSed :: [Command] -> (String, StreamEditor, String) -> String
+executeSed script (""   , state, output) = output
+executeSed script (input, state, output) =
+  let (line, input') = nextLine input
+      state' = incState state line
+      output' = output ++ doCycle script state'
+  in executeSed script (input', state', output')
+
+doCycle :: [Command] -> StreamEditor -> String
+doCycle (c : cmds) state =
+  let (res, state') = applyCommand c state
+  in  case res of
+        Continue  -> doCycle cmds state'
+        NextCycle -> ""
+doCycle [] state = patternSpace state ++ ['\n']
+
+applyCommand :: Command -> StreamEditor -> (CommandResult, StreamEditor)
+applyCommand (Addr1 a, 'd', _) state | lineNum state == a = (NextCycle, state { patternSpace = "" })
+applyCommand (Addr1 _, 'd', _) state = (Continue, state)
+applyCommand (_, 'd', _) state = (NextCycle, state { patternSpace = "" })
