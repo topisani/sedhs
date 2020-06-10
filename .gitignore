@@ -1,0 +1,4 @@
+.stack-work/
+*~
+bios-wrapper*
+haskell-stack-ghci
