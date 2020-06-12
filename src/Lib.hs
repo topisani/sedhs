@@ -4,6 +4,7 @@ module Lib where
 import           Data.Char
 import           Data.Maybe
 import           Data.List
+import           Control.Monad.State
 
 eatSpace :: String -> String
 eatSpace (x : xs) | isSpace x = eatSpace xs
@@ -11,7 +12,7 @@ eatSpace xs                   = xs
 
 eatChar :: Char -> String -> String
 eatChar a (x : xs) | x == a = xs
-eatChar _ xs = xs
+eatChar _ xs                = xs
 
 -- Eat a char and any blank chars in front and after it
 eatCharAndBlanks :: Char -> String -> String
@@ -55,7 +56,7 @@ instance Parseable OptAddr2 where
 
 instance Parseable Command where
   parse xs =
-    let (Just addr, xs') = parse xs :: Parse OptAddr2
+    let (Just addr, xs' ) = parse xs :: Parse OptAddr2
         (func     , xs'') = parse (eatSpace xs') :: Parse Char
     in  (fmap (addr, , xs'') func, xs'')
 
@@ -79,6 +80,9 @@ defaultSed = StreamEditor { patternSpace = ""
 incState state space =
   state { patternSpace = space, lineNum = lineNum state + 1 }
 
+update :: (s -> s) -> State s ()
+update f = state $ \s -> ((), f s)
+
 execute :: String -> String -> String
 execute script input = executeSed (parseScript script) (input, defaultSed, "")
 
@@ -98,7 +102,7 @@ executeSed script (input, state, output) =
 -- Returns the updates  state, and a string to be appended to the output
 doCycle :: [Command] -> StreamEditor -> (StreamEditor, String)
 doCycle (c : cmds) state =
-  let (res, state') = applyCommand c state
+  let (res, state') = runState (applyCommand c) state
   in  case res of
         Continue  -> doCycle cmds state'
         NextCycle -> (state', "")
@@ -106,32 +110,34 @@ doCycle (c : cmds) state =
 doCycle [] state = (state, patternSpace state ++ ['\n'])
 
 -- Check whether a single address selects the current pattern
-checkAddr1 :: Address -> StreamEditor -> Bool
-checkAddr1 a state | lineNum state == a = True
-checkAddr1 _ state                      = False
+checkAddr1 :: Address -> State StreamEditor Bool
+checkAddr1 a = (== a) <$> gets lineNum
 
 data AddressCheck = ACNone | ACOutside | ACFirst | ACLast | ACBetween
 -- Check whether a address (or range of addresses) selects the current pattern
-checkAddr :: OptAddr2 -> StreamEditor -> (AddressCheck, StreamEditor)
-checkAddr NoAddr state                         = (ACNone, state)
-checkAddr (Addr1 a) state | checkAddr1 a state = (ACFirst, state)
-checkAddr (Addr1 _    ) state                  = (ACOutside, state)
+checkAddr :: OptAddr2 -> State StreamEditor AddressCheck
+checkAddr NoAddr    = return ACNone
+checkAddr (Addr1 a) = do
+  b <- checkAddr1 a
+  return (if b then ACFirst else ACOutside)
 
--- A special case: If the second address is a number less than or equal to the
--- line number first selected, only one line shall be selected.
-checkAddr (Addr2 a1 a2) state | a2 < lineNum state = checkAddr (Addr1 a1) state
-
-checkAddr (Addr2 a1 a2) state                  = case (inside, check) of
-  (False, False) -> (ACOutside, state)
-  (False, True ) -> (ACFirst, stateAdd)
-  (True , False) -> (ACBetween, state)
-  (True , True ) -> (ACLast, stateDel)
- where
-  inside   = (a1, a2) `elem` insideRanges state
-  nextA    = if inside then a2 else a1
-  check    = checkAddr1 nextA state
-  stateAdd = state { insideRanges = (a1, a2) : insideRanges state }
-  stateDel = state { insideRanges = delete (a1, a2) (insideRanges state) }
+checkAddr (Addr2 a1 a2) = do
+  n <- gets lineNum
+  if a2 < n
+    -- A special case: If the second address is a number less than or equal to the
+    -- line number first selected, only one line shall be selected.
+    then checkAddr (Addr1 a1)
+    else do
+      inside <- elem (a1, a2) <$> gets insideRanges
+      b      <- checkAddr1 (if inside then a2 else a1)
+      case (inside, b) of
+        (True, True) ->
+          state $ \s ->
+            (ACLast, s { insideRanges = delete (a1, a2) $ insideRanges s })
+        (True , False) -> return ACBetween
+        (False, True ) -> state
+          $ \s -> (ACFirst, s { insideRanges = (a1, a2) : insideRanges s })
+        (False, False) -> return ACOutside
 
 -- Given an address range, a state and a function, check the address and return
 -- `(Continue, state)` if the address does not select the current state, or the
@@ -140,16 +146,14 @@ checkAddr (Addr2 a1 a2) state                  = case (inside, check) of
 -- Note: NoAddr selects anything!
 ifAddrSelects
   :: OptAddr2
-  -> StreamEditor
-  -> (StreamEditor -> (CommandResult, StreamEditor))
-  -> (CommandResult, StreamEditor)
-ifAddrSelects addr state func =
-  let (ac, state') = checkAddr addr state
-      inside       = case ac of
-        ACOutside -> False
-        _         -> True
-  in  if inside then func state' else (Continue, state')
+  -> State StreamEditor CommandResult
+  -> State StreamEditor CommandResult
+ifAddrSelects addr func = do
+  ac <- checkAddr addr
+  case ac of
+    ACOutside -> return Continue
+    _         -> func
 
-applyCommand :: Command -> StreamEditor -> (CommandResult, StreamEditor)
-applyCommand (a, 'd', _) state =
-  ifAddrSelects a state (\state' -> (NextCycle, state' { patternSpace = "" }))
+applyCommand :: Command -> State StreamEditor CommandResult
+applyCommand (a, 'd', _) =
+  ifAddrSelects a (state $ \s -> (NextCycle, s { patternSpace = "" }))
