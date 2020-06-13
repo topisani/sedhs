@@ -5,29 +5,11 @@ import           Data.Char
 import           Data.Maybe
 import           Data.List
 import           Control.Monad.State
+import           Control.Arrow
 
-eatSpace :: String -> String
-eatSpace (x : xs) | isSpace x = eatSpace xs
-eatSpace xs                   = xs
-
-eatChar :: Char -> String -> String
-eatChar a (x : xs) | x == a = xs
-eatChar _ xs                = xs
-
--- Eat a char and any blank chars in front and after it
-eatCharAndBlanks :: Char -> String -> String
-eatCharAndBlanks a = eatSpace . eatChar a . eatSpace
-
-eatSpaceOrSemCol :: String -> String
-eatSpaceOrSemCol (x : xs) | isSpace x || x == ';' = eatSpaceOrSemCol xs
-eatSpaceOrSemCol xs                               = xs
-
-nextLine :: String -> (String, String)
-nextLine str = getLineImpl ("", str)
- where
-  getLineImpl (line, '\n' : xs) = (line, xs)
-  getLineImpl (line, x : xs   ) = getLineImpl (line ++ [x], xs)
-  getLineImpl (line, []       ) = (line, [])
+------------------------------------------------------------------------------
+-- typeclass Parseable and parsing
+------------------------------------------------------------------------------
 
 type Parse a = (Maybe a, String)
 class Parseable a where
@@ -60,66 +42,95 @@ instance Parseable Command where
         (func     , xs'') = parse (eatSpace xs') :: Parse Char
     in  (fmap (addr, , xs'') func, xs'')
 
+parseScript :: String -> [Command]
+parseScript xs = maybeToList $ fst $ parse $ eatSpaceOrSemCol xs
 
-data StreamEditor = StreamEditor {
+------------------------------------------------------------------------------
+-- Parsing utilities
+------------------------------------------------------------------------------
+
+eat :: (Char -> Bool) -> String -> String
+eat f (x : xs) | f x = eat f xs
+eat _ xs             = xs
+
+eatChar :: Char -> String -> String
+eatChar a = eat (a ==)
+
+eatSpace :: String -> String
+eatSpace = eat isSpace
+
+-- Eat a char and any blank chars in front and after it
+eatCharAndBlanks :: Char -> String -> String
+eatCharAndBlanks a = eatSpace . eatChar a . eatSpace
+
+eatSpaceOrSemCol :: String -> String
+eatSpaceOrSemCol = eat $ \x -> isSpace x || x == ';'
+
+------------------------------------------------------------------------------
+-- Execution
+------------------------------------------------------------------------------
+
+type SedState = State SedStateData
+
+-- The state of the stream editor
+-- Saved between cycles
+data SedStateData = SedStateData {
   patternSpace :: String,
   holdSpace :: String,
   lineNum :: Int,
   insideRanges :: [(Address, Address)]
 } deriving (Show)
 
-data CommandResult = Continue | NextCycle
+defaultState = SedStateData { patternSpace = ""
+                            , holdSpace    = ""
+                            , lineNum      = 0
+                            , insideRanges = []
+                            }
 
-defaultSed :: StreamEditor
-defaultSed = StreamEditor { patternSpace = ""
-                          , holdSpace    = ""
-                          , lineNum      = 0
-                          , insideRanges = []
-                          }
-
-incState state space =
-  state { patternSpace = space, lineNum = lineNum state + 1 }
-
-update :: (s -> s) -> State s ()
-update f = state $ \s -> ((), f s)
-
+-- |The main `sed` function. Takes a script and an input, parses the script,
+-- splits the input into lines, and evaluates the whole thing, returning
+-- the output string
 execute :: String -> String -> String
-execute script input = executeSed (parseScript script) (input, defaultSed, "")
+execute script input =
+  evalState (executeSed (parseScript script) (lines input, "")) defaultState
 
-parseScript :: String -> [Command]
-parseScript xs = maybeToList $ fst $ parse $ eatSpaceOrSemCol xs
-
-executeSed :: [Command] -> (String, StreamEditor, String) -> String
-executeSed script ("", state, output) = output
-executeSed script (input, state, output) =
-  let (line, input')     = nextLine input
-      state'             = incState state line
-      (state'', dOutput) = doCycle script state'
-      output'            = output ++ dOutput
-  in  executeSed script (input', state'', output')
+executeSed :: [Command] -> ([String], String) -> SedState String
+executeSed script ([]   , output) = return output
+executeSed script (input, output) = do
+  let (line : input') = input
+  state $ \s -> ((), s { patternSpace = line, lineNum = lineNum s + 1 })
+  dOutput <- doCycle script
+  executeSed script (input', output ++ dOutput)
 
 -- |Runs A full cycle of commands given a `sed` state.
 -- Returns the updates  state, and a string to be appended to the output
-doCycle :: [Command] -> StreamEditor -> (StreamEditor, String)
-doCycle (c : cmds) state =
-  let (res, state') = runState (applyCommand c) state
-  in  case res of
-        Continue  -> doCycle cmds state'
-        NextCycle -> (state', "")
+doCycle :: [Command] -> SedState String
+doCycle (c : cmds) = do
+  res <- applyCommand c
+  case res of
+    Continue               -> doCycle cmds
+    NextCycle              -> return ""
+    WriteAndContinue  text -> (text ++) <$> doCycle cmds
+    WriteAndNextCycle text -> return text
 -- Base case: After running all commands, write pattern space to output
-doCycle [] state = (state, patternSpace state ++ ['\n'])
+doCycle [] = gets (patternSpace >>> (++ ['\n']))
+
+------------------------------------------------------------------------------
+-- Address checking
+------------------------------------------------------------------------------
 
 -- Check whether a single address selects the current pattern
-checkAddr1 :: Address -> State StreamEditor Bool
+checkAddr1 :: Address -> SedState Bool
 checkAddr1 a = (== a) <$> gets lineNum
 
-data AddressCheck = ACNone | ACOutside | ACFirst | ACLast | ACBetween
+data AddressCheck = ACNone | ACOutside | ACOne | ACFirst | ACBetween | ACLast
+
 -- Check whether a address (or range of addresses) selects the current pattern
-checkAddr :: OptAddr2 -> State StreamEditor AddressCheck
+checkAddr :: OptAddr2 -> SedState AddressCheck
 checkAddr NoAddr    = return ACNone
 checkAddr (Addr1 a) = do
   b <- checkAddr1 a
-  return (if b then ACFirst else ACOutside)
+  return (if b then ACOne else ACOutside)
 
 checkAddr (Addr2 a1 a2) = do
   n <- gets lineNum
@@ -144,16 +155,53 @@ checkAddr (Addr2 a1 a2) = do
 -- result of `func state'` if it does.
 --
 -- Note: NoAddr selects anything!
-ifAddrSelects
-  :: OptAddr2
-  -> State StreamEditor CommandResult
-  -> State StreamEditor CommandResult
+ifAddrSelects :: OptAddr2 -> SedState CommandResult -> SedState CommandResult
 ifAddrSelects addr func = do
   ac <- checkAddr addr
   case ac of
     ACOutside -> return Continue
     _         -> func
 
-applyCommand :: Command -> State StreamEditor CommandResult
+-- Whether an address check is the last match of a range
+-- is True for ACNone, ACOne, and ACLast, False for all others
+acIsLast :: AddressCheck -> Bool
+acIsLast ACNone = True
+acIsLast ACOne  = True
+acIsLast ACLast = True
+acIsLast _      = False
+
+------------------------------------------------------------------------------
+-- Command implementations
+------------------------------------------------------------------------------
+
+-- |The result of applying a command.
+-- Tells `doCycle` what to do
+data CommandResult = Continue | NextCycle | WriteAndContinue String | WriteAndNextCycle String
+
+applyCommand :: Command -> SedState CommandResult
 applyCommand (a, 'd', _) =
   ifAddrSelects a (state $ \s -> (NextCycle, s { patternSpace = "" }))
+applyCommand (a, 'p', _) =
+  ifAddrSelects a $ gets (WriteAndContinue . (++ ['\n']) . patternSpace)
+
+applyCommand (a, 'c', text) = do
+  ac  <- checkAddr a
+  res <- case ac of
+    ACOutside -> return Continue
+    _         -> state $ \s -> (NextCycle, s { patternSpace = "" })
+  if acIsLast ac then
+    return (WriteAndNextCycle $ unescapeTextArg text ++ ['\n'])
+  else return res
+
+-- Spec: The argument text shall consist of one or more lines. Each embedded
+-- <newline> in the text shall be preceded by a <backslash>. Other <backslash>
+-- characters in text shall be removed, and the following character shall be
+-- treated literally.
+--
+-- Also, it starts with a backslash followed by a newline. GNU sed allows this
+-- newline to be omitted, we currently don't.
+unescapeTextArg :: String -> String
+unescapeTextArg ('\\' : '\n' : xs) = unescape xs
+  where unescape ('\\' : x : xs) = x : unescape xs
+        unescape (x : xs) = x : unescape xs
+        unescape [] = []
