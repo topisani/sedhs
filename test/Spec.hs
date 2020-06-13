@@ -18,9 +18,9 @@ unitTests = testGroup
       testCase "Parse command  'd'" $
         fst (parse "d" :: Parse Command) @?= Just (NoAddr, 'd', "")
     , testCase "Parse Address  '2'" $
-        fst (parse "2" :: Parse OptAddr2) @?= Just (Addr1 2)
+        fst (parse "2" :: Parse OptAddr2) @?= Just (Addr1 $ LineNum 2)
     , testCase "Parse Address  '2 5'" $
-        fst (parse "2 5" :: Parse OptAddr2) @?= Just (Addr2 2 5)
+        fst (parse "2 5" :: Parse OptAddr2) @?= Just (Addr2 (LineNum 2) (LineNum 5))
     , testCase "Parse Address  ''" $
         fst (parse "" :: Parse OptAddr2) @?= Just NoAddr
     , testCase "Parse Char 'd'" $
@@ -28,7 +28,7 @@ unitTests = testGroup
     , testCase "Parse empty script" $
         parseScript "" @?= []
     , testCase "Parse script '2,4 d'" $
-        parseScript "2,4 d" @?= [(Addr2 2 4, 'd', "")]
+        parseScript "2,4 d" @?= [(Addr2 (LineNum 2) (LineNum 4), 'd', "")]
     ]
   , testGroup "checkAddr" [
   ]
@@ -37,7 +37,7 @@ unitTests = testGroup
         evalState (doCycle []) (defaultState { patternSpace = "input" }) @?= "input\n"
     , testCase "inside address range" $
         (length . insideRanges) (execState
-            (doCycle [(Addr2 1 2, 'd', "")]) $ defaultState { lineNum = 1 })
+            (doCycle [(Addr2 (LineNum 1) (LineNum 2), 'd', "")]) $ defaultState { lineNum = 1 })
           @?= 1
   ]
   , testCase "executeSed empty script" $
@@ -45,18 +45,18 @@ unitTests = testGroup
   , testGroup "execute" [
       testCase "Empty script" $
         execute "" "input" @?= "input\n"
-    , testCase "Script: d" $
+    , testCase "d function deletes single input" $
         execute "d" "input" @?= ""
     , testCase "Commands can be preceded by <blank> or ;" $
         execute " ; \td" "input" @?= ""
-    , testCase "Script: 2d" $
+    , testCase "d can be addressed with a single line number" $
         execute "2d" "line1\nline2\nline3\n" @?= "line1\nline3\n"
-    , testCase "Script: 2 \t d" $
+    , testCase "address and script can be separated with blank chars" $
         execute "2 \t d" "line1\nline2\nline3\n" @?= "line1\nline3\n"
-    , testCase "Script: 2,4 d" $
-        execute "2 4 d" "line1\nline2\nline3\nline4\nline5" @?= "line1\nline5\n"
-    , testCase "Script: 2 , 1 d" $
-        execute "2 1 d" "line1\nline2\nline3\nline4" @?= "line1\nline3\nline4\n"
+    , testCase "d works on Address range with line numbers" $
+        execute "2,4 d" "line1\nline2\nline3\nline4\nline5" @?= "line1\nline5\n"
+    , testCase "Second address <= first => only one line selected" $
+        execute "2,1 d" "line1\nline2\nline3\nline4" @?= "line1\nline3\nline4\n"
     , testCase "Script: 2p" $
         execute "2p" "line1\nline2\nline3" @?= "line1\nline2\nline2\nline3\n"
     , testCase "c function deletes ps and writes arg to output" $
@@ -69,5 +69,9 @@ unitTests = testGroup
         execute "2 c\\\nyes\\\nno" "line1\nline2\nline3" @?= "line1\nyes\nno\nline3\n"
     , testCase "c with arg containing escaped backslash" $
         execute "2 c\\\nyes\\\\" "line1\nline2\nline3" @?= "line1\nyes\\\nline3\n"
+    , testCase "$ addresses last line" $
+        execute "$d" "line1\nline2\n" @?= "line1\n"
+    , testCase "$ address works in range" $
+        execute "2,$d" "line1\nline2\nline3\nline4" @?= "line1\n"
     ]
   ]

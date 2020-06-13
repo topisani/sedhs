@@ -24,15 +24,20 @@ instance Parseable Char where
   parse ""       = (Nothing, "")
   parse (x : xs) = (Just x, xs)
 
-type Address = Int
+data Address = LineNum Int | LastLine deriving (Show, Eq, Ord)
 data OptAddr2 = NoAddr | Addr1 Address | Addr2 Address Address deriving (Show, Eq, Ord)
 type Function = Char
 type Command = (OptAddr2, Function, String)
 
+instance Parseable Address where
+  parse ('$':xs) = (Just LastLine, xs)
+  parse xs = (LineNum <$> n, xs')
+    where (n, xs') = parse xs :: Parse Int
+
 instance Parseable OptAddr2 where
-  parse xs = case parse xs :: Parse Int of
+  parse xs = case parse xs :: Parse Address of
     (Nothing, xs) -> (Just NoAddr, xs)
-    (Just a1, xs) -> case parse (eatCharAndBlanks ',' xs) :: Parse Int of
+    (Just a1, xs) -> case parse (eatCharAndBlanks ',' xs) :: Parse Address of
       (Nothing, xs) -> (Just $ Addr1 a1, xs)
       (Just a2, xs) -> (Just $ Addr2 a1 a2, xs)
 
@@ -78,12 +83,14 @@ data SedStateData = SedStateData {
   patternSpace :: String,
   holdSpace :: String,
   lineNum :: Int,
+  isLastLine :: Bool,
   insideRanges :: [(Address, Address)]
 } deriving (Show)
 
 defaultState = SedStateData { patternSpace = ""
                             , holdSpace    = ""
                             , lineNum      = 0
+                            , isLastLine   = False
                             , insideRanges = []
                             }
 
@@ -98,7 +105,13 @@ executeSed :: [Command] -> ([String], String) -> SedState String
 executeSed script ([]   , output) = return output
 executeSed script (input, output) = do
   let (line : input') = input
-  state $ \s -> ((), s { patternSpace = line, lineNum = lineNum s + 1 })
+  state $ \s ->
+    ( ()
+    , s { patternSpace = line
+        , lineNum      = lineNum s + 1
+        , isLastLine   = null input'
+        }
+    )
   dOutput <- doCycle script
   executeSed script (input', output ++ dOutput)
 
@@ -121,7 +134,8 @@ doCycle [] = gets (patternSpace >>> (++ ['\n']))
 
 -- Check whether a single address selects the current pattern
 checkAddr1 :: Address -> SedState Bool
-checkAddr1 a = (== a) <$> gets lineNum
+checkAddr1 (LineNum a) = (== a) <$> gets lineNum
+checkAddr1 LastLine       = gets isLastLine
 
 data AddressCheck = ACNone | ACOutside | ACOne | ACFirst | ACBetween | ACLast
 
@@ -134,11 +148,11 @@ checkAddr (Addr1 a) = do
 
 checkAddr (Addr2 a1 a2) = do
   n <- gets lineNum
-  if a2 < n
+  case (a2, n) of
     -- A special case: If the second address is a number less than or equal to the
     -- line number first selected, only one line shall be selected.
-    then checkAddr (Addr1 a1)
-    else do
+    (LineNum l, n) | l < n -> checkAddr (Addr1 a1)
+    _                         -> do
       inside <- elem (a1, a2) <$> gets insideRanges
       b      <- checkAddr1 (if inside then a2 else a1)
       case (inside, b) of
@@ -189,9 +203,9 @@ applyCommand (a, 'c', text) = do
   res <- case ac of
     ACOutside -> return Continue
     _         -> state $ \s -> (NextCycle, s { patternSpace = "" })
-  if acIsLast ac then
-    return (WriteAndNextCycle $ unescapeTextArg text ++ ['\n'])
-  else return res
+  if acIsLast ac
+    then return (WriteAndNextCycle $ unescapeTextArg text ++ ['\n'])
+    else return res
 
 -- Spec: The argument text shall consist of one or more lines. Each embedded
 -- <newline> in the text shall be preceded by a <backslash>. Other <backslash>
@@ -202,6 +216,7 @@ applyCommand (a, 'c', text) = do
 -- newline to be omitted, we currently don't.
 unescapeTextArg :: String -> String
 unescapeTextArg ('\\' : '\n' : xs) = unescape xs
-  where unescape ('\\' : x : xs) = x : unescape xs
-        unescape (x : xs) = x : unescape xs
-        unescape [] = []
+ where
+  unescape ('\\' : x : xs) = x : unescape xs
+  unescape (x        : xs) = x : unescape xs
+  unescape []              = []
