@@ -1,6 +1,6 @@
 # Features
 
-- [ ] Multiple commands separated by newlines/semicolon
+- [x] Multiple commands separated by newlines/semicolon
 - [ ] Errors!
 - [ ] Command line flags
   - [ ] Suppress default output
@@ -19,16 +19,16 @@
 - [x] c - Delete the pattern space, place text on the output and start the next cycle.
 - [x] d - Delete the pattern space and start the next cycle.
 - [ ] D - delete the pattern space through the first <newline>, and start the next cycle without reading any new input.
-- [ ] g - Replace the contents of the pattern space with the hold space
-- [ ] G - Append to the pattern space a <newline> followed by the contents of the hold space.
-- [ ] h - Replace the contents of the hold space with the contents of the pattern space.
-- [ ] H - Append to the hold space a <newline> followed by the contents of the pattern space.
+- [x] g - Replace the contents of the pattern space with the hold space
+- [x] G - Append to the pattern space a <newline> followed by the contents of the hold space.
+- [x] h - Replace the contents of the hold space with the contents of the pattern space.
+- [x] H - Append to the hold space a <newline> followed by the contents of the pattern space.
 - [ ] i - Write text to standard output
 - [ ] l - Write the pattern space to standard output in a visually unambiguous form
 - [ ] n - Write pattern space to output and read the next line of input
 - [ ] N - Append the next line of input to the pattern space
 - [x] p - Write the pattern space to standard output.
-- [ ] P - Write the pattern space, up to the first <newline>, to standard output.
+- [x] P - Write the pattern space, up to the first <newline>, to standard output.
 - [ ] q - Branch to the end of the script and quit without starting a new cycle.
 - [ ] r - Copy the contents of rfile to standard output as described previously.
 - [ ] s - Substitute the replacement string for instances of the BRE in the pattern space.

@@ -86,5 +86,17 @@ unitTests = testGroup
         execute "1d\n3d" "line1\nline2\nline3\n" @?= "line2\n"
     , testCase "Multiple commands separated by semicolon" $
         execute "1d;3d" "line1\nline2\nline3\n" @?= "line2\n"
+    , testCase "c with semicolon in text" $
+        execute "2c\\\nte;st" "line1\nline2\nline3\n" @?= "line1\nte;st\nline3\n"
+    , testCase "g: Replace the contents of the pattern space with the hold space" $
+        execute "1x;3g" "line1\nline2\nline3" @?= "\nline2\nline1\n"
+    , testCase "h: Replace the contents of the hold space with the pattern space" $
+        execute "1h;3g" "line1\nline2\nline3" @?= "line1\nline2\nline1\n"
+    , testCase "G: Append a <newline> and the hold space to the pattern space" $
+        execute "1h;G" "line1\nline2\nline3\n" @?= "line1\nline1\nline2\nline1\nline3\nline1\n"
+    , testCase "H: Append a <newline> and the pattern space to the hold space" $
+        execute "1h;2H;3x" "line1\nline2\nline3\n" @?= "line1\nline2\nline1\nline2\n"
+    , testCase "P: Output the pattern space, up to the first <newline>." $
+        execute "1h;2H;3x;3P;3x" "line1\nline2\nline3" @?= "line1\nline2\nline1\nline3\n"
     ]
   ]

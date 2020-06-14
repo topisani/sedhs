@@ -153,9 +153,15 @@ parseSequence p = Parser $ parser []
 ------------------------------------------------------------------------------
 
 data Address = LineNum Int | LastLine deriving (Show, Eq, Ord)
-data OptAddr2 = NoAddr | Addr1 Address | Addr2 Address Address deriving (Show, Eq, Ord)
+data OptAddr2 = NoAddr | Addr1 Address | Addr2 Address Address
+  deriving (Show, Eq, Ord)
 type Function = Char
 type Command = (OptAddr2, Function, String)
+
+-- | Whether a function can be foll
+canTerminateWithSemicolon :: Function -> Bool
+canTerminateWithSemicolon f =
+  not $ f `elem` ['{', 'a', 'b', 'c', 'i', 'r', 't', 'w', ':', '#']
 
 instance Parseable Address where
   parser ('$' : xs) = (Just LastLine, xs)
@@ -175,16 +181,13 @@ instance Parseable Command where
     addr <- parse :: Parser OptAddr2
     eatSpace
     func <- parse :: Parser Char
-    Parser $ \s -> (Just (addr, func, s), "")
+    arg  <- eatUntilUnescaped
+      (\c -> c == '\n' || (canTerminateWithSemicolon func && c == ';'))
+    return (addr, func, arg)
 
 parseScript :: String -> [Command]
-parseScript xs = fromMaybe [] $ evalParser
-  (parseSequence do
-    eatSpaceOrSemCol
-    cmdStr <- eatUntilUnescaped (\c -> c == '\n' || c == ';')
-    Parser $ \s -> ((evalParser (parse :: Parser Command) cmdStr), s)
-  )
-  xs
+parseScript xs =
+  fromMaybe [] $ evalParser (parseSequence $ eatSpaceOrSemCol >> parse) xs
 
 ------------------------------------------------------------------------------
 -- Execution
@@ -255,15 +258,16 @@ checkAddr1 LastLine    = gets isLastLine
 data AddressCheck = ACNone | ACOutside | ACOne | ACFirst | ACBetween | ACLast
     deriving ( Eq, Show, Ord )
 
--- | Check whether a address (or range of addresses) selects the current pattern
+-- | Check whether a address (or range of addresses) selects the current
+-- pattern
 checkAddr :: OptAddr2 -> SedState AddressCheck
 checkAddr NoAddr        = return ACNone
 checkAddr (Addr1 a    ) = checkAddr1 a <&> bool ACOutside ACOne
 checkAddr (Addr2 a1 a2) = do
   n <- gets lineNum
   case (a2, n) of
-      -- A special case: If the second address is a number less than or equal to the
-      -- line number first selected, only one line shall be selected.
+      -- A special case: If the second address is a number less than or equal
+      -- to the line number first selected, only one line shall be selected.
     (LineNum l, n) | l < n -> checkAddr (Addr1 a1)
     _                      -> do
       inside <- elem (a1, a2) <$> gets insideRanges
@@ -277,9 +281,9 @@ checkAddr (Addr2 a1 a2) = do
           $ \s -> (ACFirst, s { insideRanges = (a1, a2) : insideRanges s })
         (False, False) -> return ACOutside
 
--- | Given an address range, a state and a function, check the address and return
--- `(Continue, state)` if the address does not select the current state, or the
--- result of `func state'` if it does.
+-- | Given an address range, a state and a function, check the address and
+-- return `(Continue, state)` if the address does not select the current state,
+-- or the result of `func state'` if it does.
 --
 -- Note: NoAddr selects anything!
 ifAddrSelects :: OptAddr2 -> SedState CommandResult -> SedState CommandResult
@@ -333,6 +337,30 @@ applyCommand (a, 'c', text) = do
 -- Exchange the contents of the pattern and hold spaces.
 applyCommand (a, 'x', "") = ifAddrSelects a $ state $ \s ->
   (Continue, s { patternSpace = holdSpace s, holdSpace = patternSpace s })
+
+-- Replace the contents of the pattern space by the contents of the hold space.
+applyCommand (a, 'g', "") =
+  ifAddrSelects a $ state $ \s -> (Continue, s { patternSpace = holdSpace s })
+
+-- Append to the pattern space a <newline> followed by the contents of the hold space.
+applyCommand (a, 'G', "") = ifAddrSelects a $ state $ \s ->
+  (Continue, s { patternSpace = (patternSpace s) ++ ['\n'] ++ holdSpace s })
+
+-- Replace the contents of the hold space by the contents of the pattern space.
+applyCommand (a, 'h', "") =
+  ifAddrSelects a $ state $ \s -> (Continue, s { holdSpace = patternSpace s })
+
+-- Append to the hold space a <newline> followed by the contents of the pattern space.
+applyCommand (a, 'H', "") = ifAddrSelects a $ state $ \s ->
+  (Continue, s { holdSpace = (holdSpace s) ++ ['\n'] ++ patternSpace s })
+
+-- Write the pattern space, up to the first <newline>, to standard output.
+applyCommand (a, 'P', "") = ifAddrSelects a $ gets
+  (   patternSpace
+  >>> ((fromMaybe "") . evalParser (eatUntilChar '\n'))
+  >>> (++ ['\n'])
+  >>> WriteAndContinue
+  )
 
 -- | unescape the `text` argument as specified in the spec
 --
