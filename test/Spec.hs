@@ -5,6 +5,7 @@ import           Test.Tasty                     ( defaultMain
                                                 )
 import           Test.Tasty.HUnit
 import           Control.Monad.State
+import           Data.Default
 
 main = defaultMain tests
 
@@ -31,17 +32,23 @@ unitTests = testGroup
         parseScript "2,4 d" @?= [(Addr2 (LineNum 2) (LineNum 4), 'd', "")]
     ]
   , testGroup "checkAddr" [
+      testCase "First line of address range" $
+        evalState (checkAddr (Addr2 (LineNum 1) (LineNum 2))) (def { lineNum = 1 })
+          @?= ACFirst
+    , testCase "State of first line of address range" $
+        insideRanges (execState (checkAddr (Addr2 (LineNum 1) (LineNum 2))) $ def { lineNum = 1 })
+          @?= [(LineNum 1, LineNum 2)]
   ]
   , testGroup "doCycle" [
       testCase "empty script" $
-        evalState (doCycle []) (defaultState { patternSpace = "input" }) @?= "input\n"
+        evalState (doCycle []) (def { patternSpace = "input" }) @?= "input\n"
     , testCase "inside address range" $
         (length . insideRanges) (execState
-            (doCycle [(Addr2 (LineNum 1) (LineNum 2), 'd', "")]) $ defaultState { lineNum = 1 })
+            (doCycle [(Addr2 (LineNum 1) (LineNum 2), 'd', "")]) $ def { lineNum = 1 })
           @?= 1
   ]
   , testCase "executeSed empty script" $
-      evalState (executeSed [] (["input"], "")) defaultState @?= "input\n"
+      evalState (executeSed [] (["input"], "")) def @?= "input\n"
   , testGroup "execute" [
       testCase "Empty script" $
         execute "" "input" @?= "input\n"
@@ -73,5 +80,7 @@ unitTests = testGroup
         execute "$d" "line1\nline2\n" @?= "line1\n"
     , testCase "$ address works in range" $
         execute "2,$d" "line1\nline2\nline3\nline4" @?= "line1\n"
+    , testCase "x: exchange pattern and hold space" $
+        execute "x" "line1\nline2\nline3" @?= "\nline1\nline2\n"
     ]
   ]

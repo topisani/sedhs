@@ -6,7 +6,7 @@ cabal-version: 1.12
 
 name:           sedhs
 version:        0.1.0.0
-description:    Please see the README on GitHub at <https://github.com/githubuser/sedhs#readme>
+description:    Please see the README on GitHub at <https://github.com/topisani/sedhs#readme>
 homepage:       https://github.com/topisani/sedhs#readme
 bug-reports:    https://github.com/topisani/sedhs/issues
 author:         Tobias Pisani
@@ -32,6 +32,7 @@ library
       src
   build-depends:
       base >=4.7 && <5
+    , data-default
     , mtl
     , tasty
     , tasty-hunit
@@ -46,6 +47,7 @@ executable sedhs-exe
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , data-default
     , mtl
     , sedhs
     , tasty
@@ -62,6 +64,7 @@ test-suite sedhs-test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
+    , data-default
     , mtl
     , sedhs
     , tasty
