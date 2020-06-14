@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TupleSections #-}
@@ -16,6 +17,7 @@ import           Data.Maybe
 ------------------------------------------------------------------------------
 -- Utilities
 ------------------------------------------------------------------------------
+
 -- | Apply a function to the first element of a pair
 mapFst :: (a -> c) -> (a, b) -> (c, b)
 mapFst f (a, b) = (f a, b)
@@ -25,72 +27,164 @@ update :: (s -> s) -> State s ()
 update f = state $ \s -> ((), f s)
 
 ------------------------------------------------------------------------------
--- typeclass Parseable and parsing
+-- Monad Parser & typeclass Parseable
 ------------------------------------------------------------------------------
-type Parse a = (Maybe a, String)
+
+newtype Parser a = Parser { runParser :: String -> (Maybe a, String) }
+
+instance Functor Parser where
+  fmap f p = Parser $ \s -> case runParser p s of
+    (Nothing, xs) -> (Nothing, xs)
+    (Just a , xs) -> (Just $ f a, xs)
+
+instance Applicative Parser where
+  pure a = Parser $ \s -> (Just a, s)
+  pf <*> p = Parser $ \s -> case runParser pf s of
+    (Nothing, xs) -> (Nothing, xs)
+    (Just f , xs) -> case runParser p xs of
+      (Nothing, xs') -> (Nothing, xs')
+      (Just a , xs') -> (Just (f a), xs')
+
+instance Monad Parser where
+  return = pure
+  p >>= f = Parser $ \s -> case runParser p s of
+    (Nothing, xs) -> (Nothing, xs)
+    (Just a , xs) -> runParser (f a) xs
+
+evalParser :: Parser a -> String -> Maybe a
+evalParser p = fst . runParser p
+
+execParser :: Parser a -> String -> String
+execParser p = snd . runParser p
 
 class Parseable a where
-    parse :: String -> Parse a
-    default parse :: (Read a) => String -> Parse a
-    parse str = case reads str of
-        [ ( x, xs ) ] -> ( Just x, xs )
-        _ -> ( Nothing, str )
+    parse :: Parser a
+    parser :: String -> (Maybe a, String)
+    parse = Parser $ parser
+    parser = runParser parse
+    {-# MINIMAL parse | parser #-}
 
-instance Parseable Int
+parseRead :: (Read a) => Parser a
+parseRead = Parser $ \s -> case reads s of
+  [(x, xs)] -> (Just x, xs)
+  _         -> (Nothing, s)
+
+instance Parseable Int where
+  parse = parseRead
 
 instance Parseable Char where
-  parse ""       = (Nothing, "")
-  parse (x : xs) = (Just x, xs)
-
-data Address = LineNum Int | LastLine
-    deriving ( Show, Eq, Ord )
-
-data OptAddr2 = NoAddr | Addr1 Address | Addr2 Address Address
-    deriving ( Show, Eq, Ord )
-
-type Function = Char
-
-type Command = (OptAddr2, Function, String)
-
-instance Parseable Address where
-  parse ('$' : xs) = (Just LastLine, xs)
-  parse xs         = fmap LineNum `mapFst` (parse xs :: Parse Int)
-
-instance Parseable OptAddr2 where
-  parse xs = case parse xs :: Parse Address of
-    (Nothing, xs) -> (Just NoAddr, xs)
-    (Just a1, xs) -> case parse (eatCharAndBlanks ',' xs) :: Parse Address of
-      (Nothing, xs) -> (Just $ Addr1 a1, xs)
-      (Just a2, xs) -> (Just $ Addr2 a1 a2, xs)
-
-instance Parseable Command where
-  parse xs =
-    let (Just addr, xs' ) = parse xs :: Parse OptAddr2
-        (func     , xs'') = parse (eatSpace xs') :: Parse Char
-    in  (fmap (addr, , xs'') func, xs'')
-
-parseScript :: String -> [Command]
-parseScript xs = maybeToList $ fst $ parse $ eatSpaceOrSemCol xs
+  parser ""       = (Nothing, "")
+  parser (x : xs) = (Just x, xs)
 
 ------------------------------------------------------------------------------
 -- Parsing utilities
 ------------------------------------------------------------------------------
-eat :: (Char -> Bool) -> String -> String
-eat f (x : xs) | f x = eat f xs
-eat _ xs             = xs
 
-eatChar :: Char -> String -> String
+opt :: Parser a -> Parser (Maybe a)
+opt p = Parser $ \s -> case runParser p s of
+  (Nothing, xs) -> (Just Nothing, xs)
+  (Just a , xs) -> (Just $ Just a, xs)
+
+putRemaining :: String -> Parser ()
+putRemaining s = Parser $ \xs -> (Just (), s)
+
+eat :: (Char -> Bool) -> Parser String
+eat f = Parser $ parser ""
+ where
+  parser s (x : xs) | f x = parser (s ++ [x]) xs
+  parser s xs             = (Just s, xs)
+
+eatChar :: Char -> Parser String
 eatChar a = eat (a ==)
 
-eatSpace :: String -> String
+eatSpace :: Parser String
 eatSpace = eat isSpace
 
--- Eat a char and any blank chars in front and after it
-eatCharAndBlanks :: Char -> String -> String
-eatCharAndBlanks a = eatSpace . eatChar a . eatSpace
+-- | Eat a char and any blank chars in front and after it
+eatCharAndBlanks :: Char -> Parser String
+eatCharAndBlanks a = eatSpace >> eatChar a >> eatSpace
 
-eatSpaceOrSemCol :: String -> String
+eatSpaceOrSemCol :: Parser String
 eatSpaceOrSemCol = eat $ \x -> isSpace x || x == ';'
+
+-- | Eat until a character matches a predicate
+--
+-- The character will be included in neither the result or the remaining string
+eatUntil :: (Char -> Bool) -> Parser String
+eatUntil f = Parser (parser "")
+ where
+  parser o (x : xs) | f x = (Just o, xs)
+  parser o (x : xs)       = parser (o ++ [x]) xs
+  parser o []             = (Just o, "")
+
+-- | Eat until the given character is met
+--
+-- The character will be included in neither the result or the remaining string
+eatUntilChar :: Char -> Parser String
+eatUntilChar c = eatUntil (== c)
+
+-- | Eat until an unescaped character matches a predicate
+--
+-- The character will be included in neither the result or the remaining string
+eatUntilUnescaped :: (Char -> Bool) -> Parser String
+eatUntilUnescaped f = Parser (parser "")
+ where
+  parser o ('\\' : x : xs) = parser (o ++ ['\\', x]) xs
+  parser o (x : xs) | f x  = (Just o, xs)
+  parser o (x : xs)        = parser (o ++ [x]) xs
+  parser o []              = (Just o, "")
+
+-- | Eat until the given character is met unescaped
+--
+-- The character will be included in neither the result or the remaining string
+eatUntilUnescapedChar :: Char -> Parser String
+eatUntilUnescapedChar c = eatUntilUnescaped (== c)
+
+-- | Keep parsing a's until one fails, returning a list of all parsed 'a's
+parseSequence :: Parser a -> Parser [a]
+parseSequence p = Parser $ parser []
+ where
+  parser r s = case (runParser p s) of
+    (Nothing, xs) -> (Just r, xs)
+    (Just a , xs) -> parser (r ++ [a]) xs
+
+------------------------------------------------------------------------------
+-- Parseable Data types and implementations
+------------------------------------------------------------------------------
+
+data Address = LineNum Int | LastLine deriving (Show, Eq, Ord)
+data OptAddr2 = NoAddr | Addr1 Address | Addr2 Address Address deriving (Show, Eq, Ord)
+type Function = Char
+type Command = (OptAddr2, Function, String)
+
+instance Parseable Address where
+  parser ('$' : xs) = (Just LastLine, xs)
+  parser xs         = runParser (fmap LineNum (parse :: Parser Int)) xs
+
+instance Parseable OptAddr2 where
+  parse =
+    opt (parse :: Parser Address)
+      >>= (maybe (return NoAddr) $ \a1 ->
+            (eatCharAndBlanks ',')
+              >>  opt (parse :: Parser Address)
+              >>= (maybe (return $ Addr1 a1) $ \a2 -> return $ Addr2 a1 a2)
+          )
+
+instance Parseable Command where
+  parse = do
+    addr <- parse :: Parser OptAddr2
+    eatSpace
+    func <- parse :: Parser Char
+    Parser $ \s -> (Just (addr, func, s), "")
+
+parseScript :: String -> [Command]
+parseScript xs = fromMaybe [] $ evalParser
+  (parseSequence do
+    eatSpaceOrSemCol
+    cmdStr <- eatUntilUnescaped (\c -> c == '\n' || c == ';')
+    Parser $ \s -> ((evalParser (parse :: Parser Command) cmdStr), s)
+  )
+  xs
 
 ------------------------------------------------------------------------------
 -- Execution
@@ -99,10 +193,13 @@ type SedState = State SedStateData
 
 -- | The state of the stream editor
 -- Saved between cycles
-data SedStateData
-    = SedStateData { patternSpace :: String, holdSpace :: String, lineNum
-          :: Int, isLastLine :: Bool, insideRanges :: [ ( Address, Address ) ] }
-    deriving ( Show )
+data SedStateData = SedStateData {
+  patternSpace :: String,
+  holdSpace :: String,
+  lineNum :: Int,
+  isLastLine :: Bool,
+  insideRanges :: [(Address, Address)]
+} deriving (Show)
 
 instance Default SedStateData where
   def = SedStateData { patternSpace = ""

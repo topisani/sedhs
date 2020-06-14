@@ -17,15 +17,15 @@ unitTests = testGroup
   [
     testGroup "parse" [
       testCase "Parse command  'd'" $
-        fst (parse "d" :: Parse Command) @?= Just (NoAddr, 'd', "")
+        evalParser parse "d" @?= Just (NoAddr, 'd', "")
     , testCase "Parse Address  '2'" $
-        fst (parse "2" :: Parse OptAddr2) @?= Just (Addr1 $ LineNum 2)
+        evalParser parse "2" @?= Just (Addr1 $ LineNum 2)
     , testCase "Parse Address  '2 5'" $
-        fst (parse "2 5" :: Parse OptAddr2) @?= Just (Addr2 (LineNum 2) (LineNum 5))
+        evalParser parse "2 5" @?= Just (Addr2 (LineNum 2) (LineNum 5))
     , testCase "Parse Address  ''" $
-        fst (parse "" :: Parse OptAddr2) @?= Just NoAddr
+        evalParser parse "" @?= Just NoAddr
     , testCase "Parse Char 'd'" $
-        fst (parse "d" :: Parse Char) @?= Just 'd'
+        evalParser parse "d" @?= Just 'd'
     , testCase "Parse empty script" $
         parseScript "" @?= []
     , testCase "Parse script '2,4 d'" $
@@ -82,5 +82,9 @@ unitTests = testGroup
         execute "2,$d" "line1\nline2\nline3\nline4" @?= "line1\n"
     , testCase "x: exchange pattern and hold space" $
         execute "x" "line1\nline2\nline3" @?= "\nline1\nline2\n"
+    , testCase "Multiple commands separated by newlines" $
+        execute "1d\n3d" "line1\nline2\nline3\n" @?= "line2\n"
+    , testCase "Multiple commands separated by semicolon" $
+        execute "1d;3d" "line1\nline2\nline3\n" @?= "line2\n"
     ]
   ]
