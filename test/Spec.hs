@@ -98,5 +98,9 @@ unitTests = testGroup
         execute "1h;2H;3x" "line1\nline2\nline3\n" @?= "line1\nline2\nline1\nline2\n"
     , testCase "P: Output the pattern space, up to the first <newline>." $
         execute "1h;2H;3x;3P;3x" "line1\nline2\nline3" @?= "line1\nline2\nline1\nline3\n"
+    , testCase "=: Output the line number" $
+        execute "=" "one\ntwo\nthree\n" @?= "1\none\n2\ntwo\n3\nthree\n"
+    , testCase "# Comments" $
+        execute "1d; # This is a ;comment\n 2d" "line1\nline2\nline3" @?= "line3\n"
     ]
   ]

@@ -37,5 +37,5 @@
 - [x] x - Exchange the contents of the pattern and hold spaces.
 - [ ] y - Replace all occurrences of characters in string1 with the corresponding characters in string2.
 - [ ] : - Do nothing. This command bears a label to which the b and t commands branch.
-- [ ] = - Write the line number to standard output.
-- [ ] # - Comment
+- [x] = - Write the line number to standard output.
+- [x] # - Comment

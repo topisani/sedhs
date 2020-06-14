@@ -314,12 +314,6 @@ data CommandResult
 -- | Apply a command
 applyCommand :: Command -> SedState CommandResult
 
--- Delete the pattern space and start the next cycle.
-applyCommand (a, 'd', "") =
-  ifAddrSelects a (state $ \s -> (NextCycle, s { patternSpace = "" }))
--- Write the pattern space to standard output.
-applyCommand (a, 'p', "") =
-  ifAddrSelects a $ gets (WriteAndContinue . (++ ['\n']) . patternSpace)
 -- Delete the pattern space. With a 0 or 1 address or at the end of a
 -- 2-address range, place text on the output and start the next cycle.
 --
@@ -334,9 +328,10 @@ applyCommand (a, 'c', text) = do
       then return (WriteAndNextCycle $ unescapeTextArg text ++ ['\n'])
       else state $ \s -> (NextCycle, s { patternSpace = "" })
     else return Continue
--- Exchange the contents of the pattern and hold spaces.
-applyCommand (a, 'x', "") = ifAddrSelects a $ state $ \s ->
-  (Continue, s { patternSpace = holdSpace s, holdSpace = patternSpace s })
+
+-- Delete the pattern space and start the next cycle.
+applyCommand (a, 'd', "") =
+  ifAddrSelects a (state $ \s -> (NextCycle, s { patternSpace = "" }))
 
 -- Replace the contents of the pattern space by the contents of the hold space.
 applyCommand (a, 'g', "") =
@@ -354,6 +349,10 @@ applyCommand (a, 'h', "") =
 applyCommand (a, 'H', "") = ifAddrSelects a $ state $ \s ->
   (Continue, s { holdSpace = (holdSpace s) ++ ['\n'] ++ patternSpace s })
 
+-- Write the pattern space to standard output.
+applyCommand (a, 'p', "") =
+  ifAddrSelects a $ gets (WriteAndContinue . (++ ['\n']) . patternSpace)
+
 -- Write the pattern space, up to the first <newline>, to standard output.
 applyCommand (a, 'P', "") = ifAddrSelects a $ gets
   (   patternSpace
@@ -361,6 +360,16 @@ applyCommand (a, 'P', "") = ifAddrSelects a $ gets
   >>> (++ ['\n'])
   >>> WriteAndContinue
   )
+
+-- Exchange the contents of the pattern and hold spaces.
+applyCommand (a, 'x', "") = ifAddrSelects a $ state $ \s ->
+  (Continue, s { patternSpace = holdSpace s, holdSpace = patternSpace s })
+
+-- Output the line number followed by a newline
+applyCommand (a, '=', "") = ifAddrSelects a $ gets $ \s -> WriteAndContinue (show (lineNum s) ++ ['\n'])
+
+-- Comments!
+applyCommand (NoAddr, '#', comment) = return Continue
 
 -- | unescape the `text` argument as specified in the spec
 --
