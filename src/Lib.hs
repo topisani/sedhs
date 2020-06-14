@@ -72,26 +72,25 @@ parseRead = Parser $ \s -> case reads s of
 instance Parseable Int where
   parse = parseRead
 
-instance Parseable Char where
-  parser ""       = (Nothing, "")
-  parser (x : xs) = (Just x, xs)
-
 ------------------------------------------------------------------------------
 -- Parsing utilities
 ------------------------------------------------------------------------------
 
+-- | Make a parser optional
 opt :: Parser a -> Parser (Maybe a)
 opt p = Parser $ \s -> case runParser p s of
-  (Nothing, xs) -> (Just Nothing, xs)
+  (Nothing, _ ) -> (Just Nothing, s)
   (Just a , xs) -> (Just $ Just a, xs)
 
-putRemaining :: String -> Parser ()
-putRemaining s = Parser $ \xs -> (Just (), s)
+-- | Try parsing p, and if it fails, parse q
+pOr :: Parser a -> Parser a -> Parser a
+pOr p q = opt p >>= (maybe q return)
 
 eat :: (Char -> Bool) -> Parser String
 eat f = Parser $ parser ""
  where
   parser s (x : xs) | f x = parser (s ++ [x]) xs
+  parser s xs | null s    = (Nothing, xs)
   parser s xs             = (Just s, xs)
 
 eatChar :: Char -> Parser String
@@ -115,6 +114,7 @@ eatUntil f = Parser (parser "")
  where
   parser o (x : xs) | f x = (Just o, xs)
   parser o (x : xs)       = parser (o ++ [x]) xs
+  parser o [] | null o    = (Nothing, "")
   parser o []             = (Just o, "")
 
 -- | Eat until the given character is met
@@ -132,6 +132,7 @@ eatUntilUnescaped f = Parser (parser "")
   parser o ('\\' : x : xs) = parser (o ++ ['\\', x]) xs
   parser o (x : xs) | f x  = (Just o, xs)
   parser o (x : xs)        = parser (o ++ [x]) xs
+  parser o [] | null o     = (Nothing, "")
   parser o []              = (Just o, "")
 
 -- | Eat until the given character is met unescaped
@@ -145,7 +146,7 @@ parseSequence :: Parser a -> Parser [a]
 parseSequence p = Parser $ parser []
  where
   parser r s = case (runParser p s) of
-    (Nothing, xs) -> (Just r, xs)
+    (Nothing, xs) -> (Just r, s)
     (Just a , xs) -> parser (r ++ [a]) xs
 
 ------------------------------------------------------------------------------
@@ -156,12 +157,20 @@ data Address = LineNum Int | LastLine deriving (Show, Eq, Ord)
 data OptAddr2 = NoAddr | Addr1 Address | Addr2 Address Address
   deriving (Show, Eq, Ord)
 type Function = Char
-type Command = (OptAddr2, Function, String)
+-- | An Editor Command
+-- The list of addresses signifies nested blocks.
+-- The rightmost one is the address actually attached to the command
+type Command = (Function, OptAddr2, CommandArg)
+data CommandArg = NoArg | TextArg String | BlockArg [Command]
+  deriving (Show, Eq, Ord)
+
+isValidFunction :: Function -> Bool
+isValidFunction f = not $ f `elem` [';', '\n', ' ', '}']
 
 -- | Whether a function can be foll
 canTerminateWithSemicolon :: Function -> Bool
 canTerminateWithSemicolon f =
-  not $ f `elem` ['{', 'a', 'b', 'c', 'i', 'r', 't', 'w', ':', '#']
+  not $ f `elem` ['a', 'b', 'c', 'i', 'r', 't', 'w', ':', '#']
 
 instance Parseable Address where
   parser ('$' : xs) = (Just LastLine, xs)
@@ -170,24 +179,45 @@ instance Parseable Address where
 instance Parseable OptAddr2 where
   parse =
     opt (parse :: Parser Address)
-      >>= (maybe (return NoAddr) $ \a1 ->
-            (eatCharAndBlanks ',')
-              >>  opt (parse :: Parser Address)
-              >>= (maybe (return $ Addr1 a1) $ \a2 -> return $ Addr2 a1 a2)
+      >>= (maybe (return NoAddr) $ \a1 -> do
+            ma2 <- opt do
+              opt eatSpace
+              eatChar ','
+              opt eatSpace
+              parse :: Parser Address
+            (maybe (return $ Addr1 a1) $ \a2 -> return $ Addr2 a1 a2) ma2
           )
+
+parseFunction :: Parser Function
+parseFunction = Parser parser
+ where
+  parser (x : xs) | isValidFunction x = (Just x, xs)
+  parser xs                           = (Nothing, xs)
+
+-- | Parse the argument for the given function
+parseArg :: Function -> Parser CommandArg
+-- Implemented later in the file
 
 instance Parseable Command where
   parse = do
     addr <- parse :: Parser OptAddr2
-    eatSpace
-    func <- parse :: Parser Char
-    arg  <- eatUntilUnescaped
-      (\c -> c == '\n' || (canTerminateWithSemicolon func && c == ';'))
-    return (addr, func, arg)
+    opt eatSpace
+    func <- parseFunction
+    arg  <- parseArg func
+    -- arg  <- fmap (fromMaybe []) $ opt $ eatUntilUnescaped $ \c ->
+    --   c == '\n' || (canTerminateWithSemicolon func && c == ';')
+    return (func, addr, arg)
+
+parseCommands :: Parser [Command]
+parseCommands = do
+  cmds <- parseSequence do
+    opt eatSpaceOrSemCol
+    parse :: Parser Command
+  opt eatSpaceOrSemCol
+  return cmds
 
 parseScript :: String -> [Command]
-parseScript xs =
-  fromMaybe [] $ evalParser (parseSequence $ eatSpaceOrSemCol >> parse) xs
+parseScript xs = fromMaybe [] $ evalParser parseCommands xs
 
 ------------------------------------------------------------------------------
 -- Execution
@@ -238,14 +268,24 @@ executeSed script (input, output) = do
 -- Returns the updates  state, and a string to be appended to the output
 doCycle :: [Command] -> SedState String
 doCycle (c : cmds) = do
-  res <- applyCommand c
-  case res of
-    Continue               -> doCycle cmds
-    NextCycle              -> return ""
-    WriteAndContinue  text -> (text ++) <$> doCycle cmds
-    WriteAndNextCycle text -> return text
+  (state, text) <- applyCommand c
+  (text ++) <$> case state of
+    Continue  -> doCycle cmds
+    NextCycle -> return ""
 -- Base case: After running all commands, write pattern space to output
 doCycle [] = gets (patternSpace >>> (++ ['\n']))
+
+--  | Tells `doCycle` what to do
+data CycleState = Continue | NextCycle
+
+-- | The result of applying a command.
+type CommandResult = (CycleState, String)
+
+-- | Apply a command
+applyCommand :: Command -> SedState CommandResult
+applyCommand (f, a, arg) = do
+  ac <- checkAddr a
+  functionImpl f ac arg
 
 ------------------------------------------------------------------------------
 -- Address checking
@@ -256,7 +296,7 @@ checkAddr1 (LineNum a) = (== a) <$> gets lineNum
 checkAddr1 LastLine    = gets isLastLine
 
 data AddressCheck = ACNone | ACOutside | ACOne | ACFirst | ACBetween | ACLast
-    deriving ( Eq, Show, Ord )
+    deriving (Eq, Show, Ord)
 
 -- | Check whether a address (or range of addresses) selects the current
 -- pattern
@@ -281,16 +321,26 @@ checkAddr (Addr2 a1 a2) = do
           $ \s -> (ACFirst, s { insideRanges = (a1, a2) : insideRanges s })
         (False, False) -> return ACOutside
 
--- | Given an address range, a state and a function, check the address and
--- return `(Continue, state)` if the address does not select the current state,
--- or the result of `func state'` if it does.
+-- | Check a list of addresses
 --
--- Note: NoAddr selects anything!
-ifAddrSelects :: OptAddr2 -> SedState CommandResult -> SedState CommandResult
-ifAddrSelects addr func =
-  checkAddr addr <&> acSelects >>= bool (return Continue) func
+-- If any of them are `ACOutside`, return `ACOutside`, otherwise return the
+-- rightmost value.
+checkAddrs :: [OptAddr2] -> SedState AddressCheck
+checkAddrs as = reduce <$> (sequence $ checkAddr <$> as)
+ where
+  reduce (ACOutside : as) = ACOutside
+  reduce (a         : []) = a
+  reduce (a         : as) = reduce as
+  reduce []               = ACNone
+
+-- | Return `(Continue, state)` if the address does not select the current state,
+-- or the result of `func state'` if it does.
+ifAcSelects :: AddressCheck -> SedState CommandResult -> SedState CommandResult
+ifAcSelects ac r = if acSelects ac then r else return (Continue, "")
 
 -- | Whether an address check selected the line
+--
+-- Note: NoAddr selects anything!
 acSelects :: AddressCheck -> Bool
 acSelects ACOutside = False
 acSelects _         = True
@@ -304,74 +354,11 @@ acIsLast ACLast = True
 acIsLast _      = False
 
 ------------------------------------------------------------------------------
--- Command implementations
+-- Parse arguments
 ------------------------------------------------------------------------------
--- | The result of applying a command.
---  Tells `doCycle` what to do
-data CommandResult
-    = Continue | NextCycle | WriteAndContinue String | WriteAndNextCycle String
 
--- | Apply a command
-applyCommand :: Command -> SedState CommandResult
 
--- Delete the pattern space. With a 0 or 1 address or at the end of a
--- 2-address range, place text on the output and start the next cycle.
---
--- Note: This wording leaves a few questions:
---  - Does it start a new cycle for each line inside a 2-address range?
---    GNU sed does, so we do too. It seems to make the most sense.
---  - Newline after `text` on output? GNU sed does, and it makese sense.
-applyCommand (a, 'c', text) = do
-  ac <- checkAddr a
-  if acSelects ac
-    then if acIsLast ac
-      then return (WriteAndNextCycle $ unescapeTextArg text ++ ['\n'])
-      else state $ \s -> (NextCycle, s { patternSpace = "" })
-    else return Continue
-
--- Delete the pattern space and start the next cycle.
-applyCommand (a, 'd', "") =
-  ifAddrSelects a (state $ \s -> (NextCycle, s { patternSpace = "" }))
-
--- Replace the contents of the pattern space by the contents of the hold space.
-applyCommand (a, 'g', "") =
-  ifAddrSelects a $ state $ \s -> (Continue, s { patternSpace = holdSpace s })
-
--- Append to the pattern space a <newline> followed by the contents of the hold space.
-applyCommand (a, 'G', "") = ifAddrSelects a $ state $ \s ->
-  (Continue, s { patternSpace = (patternSpace s) ++ ['\n'] ++ holdSpace s })
-
--- Replace the contents of the hold space by the contents of the pattern space.
-applyCommand (a, 'h', "") =
-  ifAddrSelects a $ state $ \s -> (Continue, s { holdSpace = patternSpace s })
-
--- Append to the hold space a <newline> followed by the contents of the pattern space.
-applyCommand (a, 'H', "") = ifAddrSelects a $ state $ \s ->
-  (Continue, s { holdSpace = (holdSpace s) ++ ['\n'] ++ patternSpace s })
-
--- Write the pattern space to standard output.
-applyCommand (a, 'p', "") =
-  ifAddrSelects a $ gets (WriteAndContinue . (++ ['\n']) . patternSpace)
-
--- Write the pattern space, up to the first <newline>, to standard output.
-applyCommand (a, 'P', "") = ifAddrSelects a $ gets
-  (   patternSpace
-  >>> ((fromMaybe "") . evalParser (eatUntilChar '\n'))
-  >>> (++ ['\n'])
-  >>> WriteAndContinue
-  )
-
--- Exchange the contents of the pattern and hold spaces.
-applyCommand (a, 'x', "") = ifAddrSelects a $ state $ \s ->
-  (Continue, s { patternSpace = holdSpace s, holdSpace = patternSpace s })
-
--- Output the line number followed by a newline
-applyCommand (a, '=', "") = ifAddrSelects a $ gets $ \s -> WriteAndContinue (show (lineNum s) ++ ['\n'])
-
--- Comments!
-applyCommand (NoAddr, '#', comment) = return Continue
-
--- | unescape the `text` argument as specified in the spec
+-- | Parse and unescape the `text` argument as specified in the spec
 --
 -- Spec: The argument text shall consist of one or more lines. Each embedded
 -- <newline> in the text shall be preceded by a <backslash>. Other <backslash>
@@ -380,9 +367,97 @@ applyCommand (NoAddr, '#', comment) = return Continue
 --
 -- Also, it starts with a backslash followed by a newline. GNU sed allows this
 -- newline to be omitted, we currently don't.
-unescapeTextArg :: String -> String
-unescapeTextArg ('\\' : '\n' : xs) = unescape xs
+parseTextArg :: Parser CommandArg
+parseTextArg = do
+  eatChar '\\'
+  eatChar '\n'
+  text <- eatUntilUnescapedChar '\n'
+  return (TextArg $ unescape text)
  where
   unescape ('\\' : x : xs) = x : unescape xs
   unescape (x        : xs) = x : unescape xs
   unescape []              = []
+
+
+parseBlockArg :: Parser CommandArg
+parseBlockArg = do
+  cmds <- parseCommands
+  eatChar '}'
+  return $ BlockArg cmds
+
+parseArg 'c' = parseTextArg
+parseArg '#' = eatUntilChar '\n' >> return NoArg
+parseArg '{' = parseBlockArg
+parseArg _   = return NoArg
+
+------------------------------------------------------------------------------
+-- functionImpl implementations
+------------------------------------------------------------------------------
+
+functionImpl :: Function -> AddressCheck -> CommandArg -> SedState CommandResult
+
+functionImpl '{' ac (BlockArg (c@(f,addr,arg) : cmds)) = do
+  (state, text) <- do
+    ac' <- checkAddr addr
+    ifAcSelects ac $ functionImpl f ac' arg
+  (state', text') <- case state of
+      Continue  -> functionImpl '{' ac (BlockArg cmds)
+      NextCycle -> return (NextCycle, "")
+  return (state', text ++ text')
+functionImpl '{' ac (BlockArg []) = return (Continue, "")
+
+-- Delete the pattern space. With a 0 or 1 address or at the end of a
+-- 2-address range, place text on the output and start the next cycle.
+--
+-- Note: This wording leaves a few questions:
+--  - Does it start a new cycle for each line inside a 2-address range?
+--    GNU sed does, so we do too. It seems to make the most sense.
+--  - Newline after `text` on output? GNU sed does, and it makese sense.
+functionImpl 'c' ac (TextArg  text) = if acSelects ac
+  then if acIsLast ac
+    then return (NextCycle, text ++ ['\n'])
+    else state $ \s -> ((NextCycle, ""), s { patternSpace = "" })
+  else return (Continue, "")
+
+-- Delete the pattern space and start the next cycle.
+functionImpl 'd' ac NoArg =
+  ifAcSelects ac (state $ \s -> ((NextCycle, ""), s { patternSpace = "" }))
+
+-- Replace the contents of the pattern space by the contents of the hold space.
+functionImpl 'g' ac NoArg =
+  ifAcSelects ac $ state $ \s -> ((Continue, ""), s { patternSpace = holdSpace s })
+
+-- Append to the pattern space a <newline> followed by the contents of the hold space.
+functionImpl 'G' ac NoArg = ifAcSelects ac $ state $ \s ->
+  ((Continue, ""), s { patternSpace = (patternSpace s) ++ ['\n'] ++ holdSpace s })
+
+-- Replace the contents of the hold space by the contents of the pattern space.
+functionImpl 'h' ac NoArg =
+  ifAcSelects ac $ state $ \s -> ((Continue, ""), s { holdSpace = patternSpace s })
+
+-- Append to the hold space a <newline> followed by the contents of the pattern space.
+functionImpl 'H' ac NoArg = ifAcSelects ac $ state $ \s ->
+  ((Continue, ""), s { holdSpace = (holdSpace s) ++ ['\n'] ++ patternSpace s })
+
+-- Write the pattern space to standard output.
+functionImpl 'p' ac NoArg =
+  ifAcSelects ac $ gets ((Continue,) . (++ ['\n']) . patternSpace)
+
+-- Write the pattern space, up to the first <newline>, to standard output.
+functionImpl 'P' ac NoArg = ifAcSelects ac $ gets
+  (   patternSpace
+  >>> ((fromMaybe "") . evalParser (eatUntilChar '\n'))
+  >>> (++ ['\n'])
+  >>> (Continue,)
+  )
+
+-- Exchange the contents of the pattern and hold spaces.
+functionImpl 'x' ac NoArg = ifAcSelects ac $ state $ \s ->
+  ((Continue, ""), s { patternSpace = holdSpace s, holdSpace = patternSpace s })
+
+-- Output the line number followed by a newline
+functionImpl '=' ac NoArg =
+  ifAcSelects ac $ gets $ \s -> (Continue, show (lineNum s) ++ ['\n'])
+
+-- Comments!
+functionImpl '#' ac comment = return (Continue, "")

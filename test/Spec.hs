@@ -17,19 +17,23 @@ unitTests = testGroup
   [
     testGroup "parse" [
       testCase "Parse command  'd'" $
-        evalParser parse "d" @?= Just (NoAddr, 'd', "")
+        evalParser parse "d" @?= Just (('d', NoAddr, NoArg) :: Command)
     , testCase "Parse Address  '2'" $
         evalParser parse "2" @?= Just (Addr1 $ LineNum 2)
-    , testCase "Parse Address  '2 5'" $
-        evalParser parse "2 5" @?= Just (Addr2 (LineNum 2) (LineNum 5))
+    , testCase "Parse Address  '2,5'" $
+        evalParser parse "2,5" @?= Just (Addr2 (LineNum 2) (LineNum 5))
     , testCase "Parse Address  ''" $
         evalParser parse "" @?= Just NoAddr
-    , testCase "Parse Char 'd'" $
-        evalParser parse "d" @?= Just 'd'
     , testCase "Parse empty script" $
         parseScript "" @?= []
     , testCase "Parse script '2,4 d'" $
-        parseScript "2,4 d" @?= [(Addr2 (LineNum 2) (LineNum 4), 'd', "")]
+        parseScript "2,4 d" @?= [('d', Addr2 (LineNum 2) (LineNum 4), NoArg)]
+    , testCase "pOr a" $
+        runParser ((eatChar 'a') `pOr` (eatChar 'b')) "a" @?= (Just "a", "")
+    , testCase "pOr b" $
+        runParser ((eatChar 'a') `pOr` (eatChar 'b')) "b" @?= (Just "b", "")
+    , testCase "pOr neither" $
+        runParser ((eatChar 'a') `pOr` (eatChar 'b')) "c" @?= (Nothing, "c")
     ]
   , testGroup "checkAddr" [
       testCase "First line of address range" $
@@ -38,13 +42,16 @@ unitTests = testGroup
     , testCase "State of first line of address range" $
         insideRanges (execState (checkAddr (Addr2 (LineNum 1) (LineNum 2))) $ def { lineNum = 1 })
           @?= [(LineNum 1, LineNum 2)]
+    , testCase "checkAddrs: First line of address range" $
+        evalState (checkAddrs [(Addr2 (LineNum 1) (LineNum 2))]) (def { lineNum = 1 })
+          @?= ACFirst
   ]
   , testGroup "doCycle" [
       testCase "empty script" $
         evalState (doCycle []) (def { patternSpace = "input" }) @?= "input\n"
     , testCase "inside address range" $
         (length . insideRanges) (execState
-            (doCycle [(Addr2 (LineNum 1) (LineNum 2), 'd', "")]) $ def { lineNum = 1 })
+            (doCycle [('d', Addr2 (LineNum 1) (LineNum 2), NoArg)]) $ def { lineNum = 1 })
           @?= 1
   ]
   , testCase "executeSed empty script" $
@@ -102,5 +109,27 @@ unitTests = testGroup
         execute "=" "one\ntwo\nthree\n" @?= "1\none\n2\ntwo\n3\nthree\n"
     , testCase "# Comments" $
         execute "1d; # This is a ;comment\n 2d" "line1\nline2\nline3" @?= "line3\n"
+    , testCase "Script can contain empty lines" $
+        execute "1d\n\n\n2d" "line1\nline2\nline3" @?= "line3\n"
+    , testGroup "{ command blocks }" [
+        testCase "Command block executes all contained commands" $
+          execute "{ =; d; }" "line1\nline2" @?= "1\n2\n"
+      , testCase "Multiple commands with address in block" $
+          execute "{ 3=; 3d; }" "line1\nline2\nline3" @?= "line1\nline2\n3\n"
+      , testCase "Command block with address" $
+          execute "2 { =; d; }" "line1\nline2" @?= "line1\n2\n"
+      , testCase "Command with address in block with address" $
+          execute "3 { 3=; 3d; }" "line1\nline2\nline3" @?= "line1\nline2\n3\n"
+      , testCase "Command with address in block with address range" $
+          execute "2,3 { 3=; 3d; }" "line1\nline2\nline3" @?= "line1\nline2\n3\n"
+      , testCase "Nested Command block with conflicting address" $
+          execute "2 { 1 { 2d; }; }" "line1\nline2" @?= "line1\nline2\n"
+      , testCase "Nested Command block with contained range address" $
+          execute "2,$ { 2,3 { d; }; }" "line1\nline2\nline3\nline4" @?= "line1\nline4\n"
+      , testCase "Range address contained in block address" $
+          execute "2,$ { 2,3d }" "line1\nline2\nline3\nline4" @?= "line1\nline4\n"
+      , testCase "Range addresses overlapping block address" $
+          execute "2,$ { 1,3d }" "line1\nline2\nline3\nline4" @?= "line1\nline4\n"
+      ]
     ]
   ]

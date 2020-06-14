@@ -13,7 +13,7 @@
 
 # Functions
 
-- [ ] { - Execute a list of sed editing commands only when the pattern space is selected
+- [x] { - Execute a list of sed editing commands only when the pattern space is selected
 - [ ] a - Write text to standard output as described previously.
 - [ ] b - Branch to the : command verb bearing the label argument
 - [x] c - Delete the pattern space, place text on the output and start the next cycle.
