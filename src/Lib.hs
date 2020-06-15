@@ -230,8 +230,7 @@ data SedStateData = SedStateData {
   patternSpace :: String,
   holdSpace :: String,
   lineNum :: Int,
-  isLastLine :: Bool,
-  insideRanges :: [(Address, Address)]
+  isLastLine :: Bool
 } deriving (Show)
 
 instance Default SedStateData where
@@ -239,7 +238,6 @@ instance Default SedStateData where
                      , holdSpace    = ""
                      , lineNum      = 0
                      , isLastLine   = False
-                     , insideRanges = []
                      }
 
 -- | Clear the pattern space
@@ -298,40 +296,29 @@ checkAddr1 LastLine    = gets isLastLine
 data AddressCheck = ACNone | ACOutside | ACOne | ACFirst | ACBetween | ACLast
     deriving (Eq, Show, Ord)
 
+-- | Make an Address check from 3 bools: isInside, isFirst and isLast
+makeAc :: Bool -> Bool -> Bool -> AddressCheck
+makeAc False _     _     = ACOutside
+makeAc True  False False = ACBetween
+makeAc True  True  False = ACFirst
+makeAc True  False True  = ACLast
+makeAc True  True  True  = ACOne
+
 -- | Check whether a address (or range of addresses) selects the current
 -- pattern
 checkAddr :: OptAddr2 -> SedState AddressCheck
 checkAddr NoAddr        = return ACNone
 checkAddr (Addr1 a    ) = checkAddr1 a <&> bool ACOutside ACOne
 checkAddr (Addr2 a1 a2) = do
-  n <- gets lineNum
-  case (a2, n) of
-      -- A special case: If the second address is a number less than or equal
-      -- to the line number first selected, only one line shall be selected.
-    (LineNum l, n) | l < n -> checkAddr (Addr1 a1)
-    _                      -> do
-      inside <- elem (a1, a2) <$> gets insideRanges
-      b      <- checkAddr1 (if inside then a2 else a1)
-      case (inside, b) of
-        (True, True) ->
-          state $ \s ->
-            (ACLast, s { insideRanges = delete (a1, a2) $ insideRanges s })
-        (True , False) -> return ACBetween
-        (False, True ) -> state
-          $ \s -> (ACFirst, s { insideRanges = (a1, a2) : insideRanges s })
-        (False, False) -> return ACOutside
-
--- | Check a list of addresses
---
--- If any of them are `ACOutside`, return `ACOutside`, otherwise return the
--- rightmost value.
-checkAddrs :: [OptAddr2] -> SedState AddressCheck
-checkAddrs as = reduce <$> (sequence $ checkAddr <$> as)
- where
-  reduce (ACOutside : as) = ACOutside
-  reduce (a         : []) = a
-  reduce (a         : as) = reduce as
-  reduce []               = ACNone
+  n    <- gets lineNum
+  last <- gets isLastLine
+  case (a1, a2) of
+    (LastLine  , _       ) -> return $ bool ACOutside ACOne last
+    (LineNum l1, LastLine) -> return $ makeAc (l1 <= n) (l1 == n) last
+    (LineNum l1, LineNum l2) | l2 < l1 ->
+      return $ bool ACOutside ACOne (n == l1)
+    (LineNum l1, LineNum l2) ->
+      return $ makeAc (l1 <= n && l2 >= n) (l1 == n) (l2 == n)
 
 -- | Return `(Continue, state)` if the address does not select the current state,
 -- or the result of `func state'` if it does.
@@ -396,15 +383,15 @@ parseArg _   = return NoArg
 
 functionImpl :: Function -> AddressCheck -> CommandArg -> SedState CommandResult
 
-functionImpl '{' ac (BlockArg (c@(f,addr,arg) : cmds)) = do
+functionImpl '{' ac (BlockArg (c@(f, addr, arg) : cmds)) = do
   (state, text) <- do
     ac' <- checkAddr addr
     ifAcSelects ac $ functionImpl f ac' arg
   (state', text') <- case state of
-      Continue  -> functionImpl '{' ac (BlockArg cmds)
-      NextCycle -> return (NextCycle, "")
+    Continue  -> functionImpl '{' ac (BlockArg cmds)
+    NextCycle -> return (NextCycle, "")
   return (state', text ++ text')
-functionImpl '{' ac (BlockArg []) = return (Continue, "")
+functionImpl '{' ac (BlockArg []  ) = return (Continue, "")
 
 -- Delete the pattern space. With a 0 or 1 address or at the end of a
 -- 2-address range, place text on the output and start the next cycle.
@@ -424,16 +411,18 @@ functionImpl 'd' ac NoArg =
   ifAcSelects ac (state $ \s -> ((NextCycle, ""), s { patternSpace = "" }))
 
 -- Replace the contents of the pattern space by the contents of the hold space.
-functionImpl 'g' ac NoArg =
-  ifAcSelects ac $ state $ \s -> ((Continue, ""), s { patternSpace = holdSpace s })
+functionImpl 'g' ac NoArg = ifAcSelects ac $ state $ \s ->
+  ((Continue, ""), s { patternSpace = holdSpace s })
 
 -- Append to the pattern space a <newline> followed by the contents of the hold space.
 functionImpl 'G' ac NoArg = ifAcSelects ac $ state $ \s ->
-  ((Continue, ""), s { patternSpace = (patternSpace s) ++ ['\n'] ++ holdSpace s })
+  ( (Continue, "")
+  , s { patternSpace = (patternSpace s) ++ ['\n'] ++ holdSpace s }
+  )
 
 -- Replace the contents of the hold space by the contents of the pattern space.
-functionImpl 'h' ac NoArg =
-  ifAcSelects ac $ state $ \s -> ((Continue, ""), s { holdSpace = patternSpace s })
+functionImpl 'h' ac NoArg = ifAcSelects ac $ state $ \s ->
+  ((Continue, ""), s { holdSpace = patternSpace s })
 
 -- Append to the hold space a <newline> followed by the contents of the pattern space.
 functionImpl 'H' ac NoArg = ifAcSelects ac $ state $ \s ->
@@ -441,14 +430,14 @@ functionImpl 'H' ac NoArg = ifAcSelects ac $ state $ \s ->
 
 -- Write the pattern space to standard output.
 functionImpl 'p' ac NoArg =
-  ifAcSelects ac $ gets ((Continue,) . (++ ['\n']) . patternSpace)
+  ifAcSelects ac $ gets ((Continue, ) . (++ ['\n']) . patternSpace)
 
 -- Write the pattern space, up to the first <newline>, to standard output.
 functionImpl 'P' ac NoArg = ifAcSelects ac $ gets
   (   patternSpace
   >>> ((fromMaybe "") . evalParser (eatUntilChar '\n'))
   >>> (++ ['\n'])
-  >>> (Continue,)
+  >>> (Continue, )
   )
 
 -- Exchange the contents of the pattern and hold spaces.

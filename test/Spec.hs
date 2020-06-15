@@ -39,20 +39,10 @@ unitTests = testGroup
       testCase "First line of address range" $
         evalState (checkAddr (Addr2 (LineNum 1) (LineNum 2))) (def { lineNum = 1 })
           @?= ACFirst
-    , testCase "State of first line of address range" $
-        insideRanges (execState (checkAddr (Addr2 (LineNum 1) (LineNum 2))) $ def { lineNum = 1 })
-          @?= [(LineNum 1, LineNum 2)]
-    , testCase "checkAddrs: First line of address range" $
-        evalState (checkAddrs [(Addr2 (LineNum 1) (LineNum 2))]) (def { lineNum = 1 })
-          @?= ACFirst
   ]
   , testGroup "doCycle" [
       testCase "empty script" $
         evalState (doCycle []) (def { patternSpace = "input" }) @?= "input\n"
-    , testCase "inside address range" $
-        (length . insideRanges) (execState
-            (doCycle [('d', Addr2 (LineNum 1) (LineNum 2), NoArg)]) $ def { lineNum = 1 })
-          @?= 1
   ]
   , testCase "executeSed empty script" $
       evalState (executeSed [] (["input"], "")) def @?= "input\n"
@@ -130,6 +120,8 @@ unitTests = testGroup
           execute "2,$ { 2,3d }" "line1\nline2\nline3\nline4" @?= "line1\nline4\n"
       , testCase "Range addresses overlapping block address" $
           execute "2,$ { 1,3d }" "line1\nline2\nline3\nline4" @?= "line1\nline4\n"
+      , testCase "Identical nested range address" $
+          execute "2,3 { 2,3d }" "line1\nline2\nline3\nline4" @?= "line1\nline4\n"
       ]
     ]
   ]
