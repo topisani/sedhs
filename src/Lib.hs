@@ -372,9 +372,10 @@ parseBlockArg = do
   eatChar '}'
   return $ BlockArg cmds
 
-parseArg 'c' = parseTextArg
-parseArg '#' = eatUntilChar '\n' >> return NoArg
 parseArg '{' = parseBlockArg
+parseArg 'c' = parseTextArg
+parseArg 'i' = parseTextArg
+parseArg '#' = eatUntilChar '\n' >> return NoArg
 parseArg _   = return NoArg
 
 ------------------------------------------------------------------------------
@@ -427,6 +428,9 @@ functionImpl 'h' ac NoArg = ifAcSelects ac $ state $ \s ->
 -- Append to the hold space a <newline> followed by the contents of the pattern space.
 functionImpl 'H' ac NoArg = ifAcSelects ac $ state $ \s ->
   ((Continue, ""), s { holdSpace = (holdSpace s) ++ ['\n'] ++ patternSpace s })
+
+-- Write text to standard output
+functionImpl 'i' ac (TextArg text) = ifAcSelects ac $ return (Continue, text ++ ['\n'])
 
 -- Write the pattern space to standard output.
 functionImpl 'p' ac NoArg =

@@ -123,5 +123,7 @@ unitTests = testGroup
       , testCase "Identical nested range address" $
           execute "2,3 { 2,3d }" "line1\nline2\nline3\nline4" @?= "line1\nline4\n"
       ]
+    , testCase "i: Insert text" $
+        execute "2i\\\nwhoop" "line1\nline2" @?= "line1\nwhoop\nline2\n"
     ]
   ]

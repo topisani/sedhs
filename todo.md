@@ -23,7 +23,7 @@
 - [x] G - Append to the pattern space a <newline> followed by the contents of the hold space.
 - [x] h - Replace the contents of the hold space with the contents of the pattern space.
 - [x] H - Append to the hold space a <newline> followed by the contents of the pattern space.
-- [ ] i - Write text to standard output
+- [x] i - Write text to standard output
 - [ ] l - Write the pattern space to standard output in a visually unambiguous form
 - [ ] n - Write pattern space to output and read the next line of input
 - [ ] N - Append the next line of input to the pattern space
